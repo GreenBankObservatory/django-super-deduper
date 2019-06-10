@@ -1,6 +1,7 @@
 from typing import List
 
-from django.db.models import Field, Model
+from django.contrib.postgres.fields import JSONField
+from django.db.models import Field, Model, PositiveIntegerField
 
 
 class ModelMeta(object):
@@ -23,3 +24,21 @@ class ModelMeta(object):
     @property
     def model_name(self) -> str:
         return self.options.model.__name__
+
+class MergeInfo(Model):
+    alias_field_values_summary = JSONField(
+        null=True,
+        blank=True,
+        help_text="A summary of all unique differences between the alias "
+        "instances and the primary instance",
+    )
+    alias_field_values = JSONField(
+        null=True,
+        blank=True,
+        help_text="A list of dicts, each containing the differences between the "
+        "primary instance and an alias instance",
+    )
+    num_instances_merged = PositiveIntegerField(
+        help_text="The number of model instances that were merged together "
+        "(including the primary)"
+    )

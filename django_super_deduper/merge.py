@@ -1,5 +1,6 @@
+from collections import defaultdict
 import logging
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from django.core.exceptions import ValidationError
 from django.core.serializers import serialize
@@ -19,6 +20,8 @@ class MergedModelInstance(object):
         self.merge_field_values = merge_field_values
         self.model_meta = ModelMeta(primary_object)
         self.modified_related_objects = []  # type: List
+        self.alias_field_values_summary = {}  # type: Dict
+        self.alias_field_values = {}  # type: Dict
 
     @classmethod
     def _create(
@@ -35,14 +38,35 @@ class MergedModelInstance(object):
         logger.debug(serialize('json', [primary_object, ]))
         logger.debug(serialize('json', alias_objects))
 
+        alias_field_values = []
+        alias_field_values_summary = defaultdict(set)
         for alias_object in alias_objects:
-            merged_model_instance.merge(alias_object)
+            # TODO: Not changed_fields, pick better name
+            changed_fields = merged_model_instance.merge(alias_object)
+            alias_field_values.append(changed_fields)
+            for field, alias_value in changed_fields.items():
+                try:
+                    alias_field_values_summary[field].add(alias_value)
+                except TypeError:
+                    logger.warning("Could not process field '{field'}")
+
+
+        # alias_field_values_summary = {k: [_v for _v in v if _v] for k, v in alias_field_values_summary.items()}
+        alias_field_values_summary = {k: list(v) for k, v in alias_field_values_summary.items()}
+
+        merged_model_instance.alias_field_values_summary = alias_field_values_summary
+        merged_model_instance.alias_field_values = alias_field_values
 
         return merged_model_instance
 
     @classmethod
     def create(cls, *args, **kwargs) -> Model:
         return cls._create(*args, **kwargs).primary_object
+
+    @classmethod
+    def create_with_change_tracking(cls, *args, **kwargs):
+        instance = cls._create(*args, **kwargs)
+        return instance.primary_object, instance.alias_field_values_summary, instance.alias_field_values
 
     @classmethod
     def create_with_audit_trail(cls, *args, **kwargs) -> Tuple[Model, List[Model]]:
@@ -129,11 +153,17 @@ class MergedModelInstance(object):
             elif related_field.many_to_many:
                 self._handle_m2m_related_field(related_field, alias_object)
 
+        # Stores any alias object fields that are both non-empty and different than their
+        # counterpart in the primary object
+        different_alias_field_values = {}
         if self.merge_field_values:
             # This step can lead to validation errors if `field` has a `unique or` `unique_together` constraint.
             for field in model_meta.editable_fields:
                 primary_value = getattr(primary_object, field.name)
                 alias_value = getattr(alias_object, field.name)
+
+                if alias_value not in field.empty_values and alias_value != primary_value:
+                    different_alias_field_values[field.name] = alias_value
 
                 logger.debug(f'Primary {field.name} has value: {primary_value}, '
                              f'Alias {field.name} has value: {alias_value}')
@@ -146,3 +176,4 @@ class MergedModelInstance(object):
             alias_object.delete()
 
         primary_object.save()
+        return different_alias_field_values
